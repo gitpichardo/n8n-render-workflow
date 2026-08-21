@@ -207,6 +207,34 @@ next to the process.
    `"is not registered"`. `imagekit-library-chat` doesn't need this: its chat
    trigger is called through n8n's own chat UI/API, not a standalone webhook.
 
+### Keeping the service up to date after the first deploy
+
+If you provisioned this through the Dashboard's Blueprint flow (step 2
+above) and connected your GitHub account via its OAuth prompt, pushes to
+your linked branch auto-deploy natively -- no further setup needed.
+
+If instead the service was provisioned via the [Render
+API](https://api-docs.render.com)/[CLI](https://render.com/docs/cli) using
+a **plain repository URL** rather than that OAuth flow (this is how this
+project's own deployed instance was actually stood up, and was confirmed
+live: a push to `main` after creation did not trigger a deploy on its
+own), pushes will **not** auto-deploy -- per [Render's
+docs](https://render.com/docs/deploys#automatic-deploys), "auto-deploys
+require a connected GitHub, GitLab, or Bitbucket account. Services that
+use... a public Git repository URL must be deployed manually."
+
+This repo ships [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml)
+for exactly that case: on every push to `main`, it validates the workflow
+JSON files, then (only if that passes) redeploys the `n8n` service via the
+Render CLI, authenticated with `RENDER_API_KEY` (no OAuth needed). To use
+it:
+
+1. Add a `RENDER_API_KEY` repo secret (Settings > Secrets and variables >
+   Actions > New repository secret) -- the same key already in
+   `.env.local`.
+2. Update `SERVICE_ID` in the workflow file if your service id differs
+   (find it with `render services list -o json`).
+
 ## Local development
 
 Requires Docker.

@@ -1,0 +1,58 @@
+name: Deploy to Render
+
+# This service was created via the Render API with a plain repository URL
+# rather than through Render's GitHub App OAuth flow -- see README >
+# Verification > "The real Render deploy" for why (non-interactive
+# provisioning needs a plain repo URL). Render's *native* auto-deploy (a
+# GitHub webhook that fires on push) only exists for services linked
+# through that OAuth flow -- "Auto-deploys require a connected GitHub,
+# GitLab, or Bitbucket account. Services that use a public Git repository
+# URL must be deployed manually."
+# (https://render.com/docs/deploys#automatic-deploys). Confirmed live: a
+# real push to `main` after this service's creation did not trigger a
+# deploy on its own.
+#
+# This workflow is Render's own documented replacement for that case:
+# validate the workflow JSON files, then use the Render CLI (authenticated
+# via RENDER_API_KEY, no OAuth needed) to trigger a real deploy on every
+# push to main -- functionally equivalent to native auto-deploy for a plain
+# repo URL. See https://render.com/docs/cli#example-github-actions.
+#
+# Required repo secret (Settings -> Secrets and variables -> Actions):
+#   RENDER_API_KEY -- the same key already in .env.local locally.
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Validate workflow JSON files parse
+        run: |
+          for f in workflows/*.json; do
+            echo "checking $f"
+            node -e "JSON.parse(require('fs').readFileSync('$f', 'utf8'))"
+          done
+
+  deploy:
+    needs: validate
+    runs-on: ubuntu-latest
+    env:
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      RENDER_CLI_VERSION: '2.24.0'
+      # n8n web service id, from `render services list -o json` -- see
+      # README for how this service was provisioned.
+      SERVICE_ID: srv-da3vk7qjobas739t9060
+    steps:
+      - name: Install Render CLI
+        run: |
+          curl -sL "https://github.com/render-oss/cli/releases/download/v${RENDER_CLI_VERSION}/cli_${RENDER_CLI_VERSION}_linux_amd64.zip" -o render-cli.zip
+          unzip -o render-cli.zip -d render-cli
+          sudo mv "render-cli/cli_v${RENDER_CLI_VERSION}" /usr/local/bin/render
+          render --version
+
+      - name: Deploy n8n
+        run: render deploys create "$SERVICE_ID" --output json --confirm --wait
