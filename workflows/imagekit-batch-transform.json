@@ -1,0 +1,233 @@
+{
+  "name": "imagekit-batch-transform",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "imagekit-batch-transform",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "b2b2b2b2-0001-4000-8000-000000000001",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [-320, 0],
+      "webhookId": "c3c3c3c3-0002-4000-8000-000000000002"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://api.imagekit.io/v1/files",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "searchQuery",
+              "value": "={{ $json.body.searchQuery }}"
+            },
+            {
+              "name": "limit",
+              "value": "={{ $json.body.maxAssets || 200 }}"
+            }
+          ]
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "options": {}
+      },
+      "id": "b2b2b2b2-0003-4000-8000-000000000003",
+      "name": "Search Media Library",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-160, 0],
+      "notes": "No credential attached on import. Create an HTTP Basic Auth credential with your ImageKit private key as the username and an empty password, then select it here. See README > First login setup."
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// Cross the assets returned by the search above with the variants named\n// in the original webhook body, one output item per (asset, variant) pair.\n// Mirrors CampaignBrief.variants from the imagekit-render-creative-automation\n// spec so the two templates speak the same shape.\nconst body = $('Webhook').first().json.body || {};\nconst variants = Array.isArray(body.variants) ? body.variants : [];\nconst maxAssets = Number(body.maxAssets) > 0 ? Number(body.maxAssets) : 200;\n\nif (variants.length === 0) {\n  throw new Error('Request body must include a non-empty \"variants\" array, e.g. [{ \"name\": \"square\", \"query\": \"resize to 1080x1080\" }].');\n}\n\nconst assets = items.slice(0, maxAssets);\nconst jobs = [];\nfor (const asset of assets) {\n  for (const variant of variants) {\n    jobs.push({\n      json: {\n        fileId: asset.json.fileId,\n        filePath: asset.json.filePath,\n        sourceUrl: asset.json.url,\n        variantName: variant.name,\n        variantQuery: variant.query,\n      },\n    });\n  }\n}\n\nreturn jobs;"
+      },
+      "id": "b2b2b2b2-0004-4000-8000-000000000004",
+      "name": "Expand assets x variants",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [0, 0],
+      "notes": "Fans out N assets x M variants into N*M jobs, capped by maxAssets (default 200, same default as imagekit-render-creative-automation's MAX_FAN_OUT) so a bad searchQuery cannot fan out to thousands of jobs."
+    },
+    {
+      "parameters": {
+        "batchSize": 5,
+        "options": {}
+      },
+      "id": "b2b2b2b2-0005-4000-8000-000000000005",
+      "name": "Loop Over Jobs",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [200, 0]
+    },
+    {
+      "parameters": {
+        "serverTransport": "httpStreamable",
+        "endpointUrl": "https://devtools-mcp.imagekit.io/mcp",
+        "authentication": "none",
+        "tool": {
+          "__rl": true,
+          "mode": "id",
+          "value": "transformation_builder"
+        },
+        "inputMode": "json",
+        "jsonInput": "={{ { \"query\": $json.variantQuery, \"src\": $json.sourceUrl, \"fetch_url_to_check\": false } }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "b2b2b2b2-0006-4000-8000-000000000006",
+      "name": "Build Transformation URL",
+      "type": "@n8n/n8n-nodes-langchain.mcpClient",
+      "typeVersion": 1.1,
+      "position": [420, 100],
+      "notes": "Public DevTools MCP, no auth required. Calls the transformation_builder tool directly as a normal workflow step (not as an AI Agent tool) -- this is the standalone MCP Client node, distinct from the MCP Client Tool sub-node used in imagekit-library-chat.json."
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": "// Implements the same async-transformation protocol as\n// imagekit-render-creative-automation/src/lib/await-transformation.ts:\n// treat `is-intermediate-response: true`, HTTP 202, and HTTP 302 as \"not\n// ready yet\" even though they carry a successful-looking status, retry with\n// exponential backoff + jitter (1s, capped at 30s), and surface `ik-error`\n// as a hard failure. See that file's header comment for the ImageKit docs\n// this is sourced from.\nconst job = $input.item.json;\n\nfunction extractUrl(mcpResult) {\n  const structured = mcpResult.structuredContent;\n  if (structured && typeof structured.url === 'string') return structured.url;\n  const content = Array.isArray(mcpResult.content) ? mcpResult.content : [];\n  for (const part of content) {\n    const text = part && part.text;\n    if (typeof text === 'object' && text !== null && typeof text.url === 'string') return text.url;\n    if (typeof text === 'string') {\n      const match = text.match(/https?:\\/\\/\\S+/);\n      if (match) return match[0];\n    }\n  }\n  return undefined;\n}\n\nconst url = extractUrl(job);\nif (!url) {\n  return { json: { ...job, status: 'error', error: 'transformation_builder did not return a URL.' } };\n}\n\nconst timeoutMs = 120000;\nconst maxDelayMs = 30000;\nlet delayMs = 1000;\nconst startedAt = Date.now();\n\nwhile (true) {\n  const response = await helpers.httpRequest({\n    method: 'GET',\n    url,\n    returnFullResponse: true,\n    ignoreHttpStatusErrors: true,\n    disableFollowRedirect: true,\n    timeout: 30000,\n  });\n\n  const headers = response.headers || {};\n  const isIntermediate = String(headers['is-intermediate-response'] || '').toLowerCase() === 'true';\n  const ikError = headers['ik-error'];\n  const status = response.statusCode;\n\n  if (ikError) {\n    return { json: { ...job, url, status: 'error', error: String(ikError) } };\n  }\n\n  const notReady = isIntermediate || status === 202 || status === 302;\n  if (!notReady && status >= 200 && status < 300) {\n    return { json: { ...job, url, status: 'ready' } };\n  }\n\n  const elapsed = Date.now() - startedAt;\n  if (elapsed >= timeoutMs) {\n    return { json: { ...job, url, status: 'timeout' } };\n  }\n\n  const jitteredDelay = delayMs * (0.5 + Math.random() * 0.5);\n  const sleepMs = Math.min(jitteredDelay, timeoutMs - elapsed);\n  await new Promise((resolve) => setTimeout(resolve, sleepMs));\n  delayMs = Math.min(delayMs * 2, maxDelayMs);\n}"
+      },
+      "id": "b2b2b2b2-0007-4000-8000-000000000007",
+      "name": "Poll transformation until ready",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [640, 100]
+    },
+    {
+      "parameters": {
+        "operation": "csv",
+        "options": {
+          "fileName": "manifest.csv"
+        }
+      },
+      "id": "b2b2b2b2-0008-4000-8000-000000000008",
+      "name": "Build CSV Manifest",
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [420, -160]
+    },
+    {
+      "parameters": {
+        "respondWith": "binary",
+        "responseDataSource": "automatically",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "text/csv"
+              }
+            ]
+          }
+        }
+      },
+      "id": "b2b2b2b2-0009-4000-8000-000000000009",
+      "name": "Respond with CSV",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [640, -160]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Search Media Library",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search Media Library": {
+      "main": [
+        [
+          {
+            "node": "Expand assets x variants",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Expand assets x variants": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Jobs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Jobs": {
+      "main": [
+        [
+          {
+            "node": "Build CSV Manifest",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Transformation URL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Transformation URL": {
+      "main": [
+        [
+          {
+            "node": "Poll transformation until ready",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Poll transformation until ready": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Jobs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build CSV Manifest": {
+      "main": [
+        [
+          {
+            "node": "Respond with CSV",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "meta": {},
+  "tags": []
+}

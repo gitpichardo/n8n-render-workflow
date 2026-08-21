@@ -1,0 +1,7 @@
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+n8n-data/
+.n8n/

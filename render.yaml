@@ -1,0 +1,87 @@
+# Deploys n8n on Render with the two ImageKit workflows in workflows/
+# already imported on first boot, backed by a Render Postgres database.
+#
+# This forks the shape of Render's own n8n Blueprint
+# (https://github.com/render-examples/n8n, see also
+# https://render.com/docs/deploy-n8n) and adds:
+#   - A custom Dockerfile instead of pulling n8nio/n8n directly, so the
+#     workflows in ./workflows/ get baked in and imported on first boot.
+#   - A persistent disk, because the marker file that guards re-imports
+#     (see scripts/import-workflows.sh) and n8n's own instance state both
+#     need to survive redeploys. Render's docs recommend Postgres over a
+#     disk specifically because a disk blocks zero-downtime deploys and
+#     multi-instance scaling (https://render.com/docs/deploy-n8n) -- accept
+#     that tradeoff here for the marker file's sake, or drop the disk and
+#     re-import on every deploy if you don't mind that instead.
+#   - N8N_HOST / WEBHOOK_URL / N8N_PROTOCOL, which the official Blueprint
+#     leaves for you to set by hand after deploy; wired here via
+#     `fromService` so a fresh fork needs zero manual env var edits.
+#
+# Persistent disks require a paid instance type (see
+# https://render.com/docs/disks#disk-pricing), hence `plan: starter` below
+# instead of `free`.
+services:
+  - type: web
+    name: n8n
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: starter
+    healthCheckPath: /healthz
+    disk:
+      name: n8n-data
+      mountPath: /home/node/.n8n
+      sizeGB: 1
+    envVars:
+      # Do not modify after first deploy -- doing so makes every credential
+      # already encrypted in the database unreadable. Same warning as
+      # Render's own n8n Blueprint.
+      - key: N8N_ENCRYPTION_KEY
+        generateValue: true
+      - key: DB_TYPE
+        value: postgresdb
+      - key: DB_POSTGRESDB_DATABASE
+        fromDatabase:
+          name: n8n-db
+          property: database
+      - key: DB_POSTGRESDB_HOST
+        fromDatabase:
+          name: n8n-db
+          property: host
+      - key: DB_POSTGRESDB_PORT
+        fromDatabase:
+          name: n8n-db
+          property: port
+      - key: DB_POSTGRESDB_USER
+        fromDatabase:
+          name: n8n-db
+          property: user
+      - key: DB_POSTGRESDB_PASSWORD
+        fromDatabase:
+          name: n8n-db
+          property: password
+      - key: N8N_PROTOCOL
+        value: https
+      - key: N8N_HOST
+        fromService:
+          type: web
+          name: n8n
+          envVarKey: RENDER_EXTERNAL_HOSTNAME
+      - key: WEBHOOK_URL
+        fromService:
+          type: web
+          name: n8n
+          envVarKey: RENDER_EXTERNAL_URL
+      # Public, unauthenticated ImageKit DevTools MCP -- see README > MCP
+      # configuration. Not a secret; safe to set as a plain value.
+      - key: IMAGEKIT_MCP_URL
+        value: https://devtools-mcp.imagekit.io/mcp
+      # ImageKit credentials are NOT set here. They're attached as an n8n
+      # credential in the editor UI on first login (see README > First
+      # login setup), not as container env vars, so they're encrypted at
+      # rest by n8n's own credential store rather than living in plaintext
+      # next to the process.
+
+databases:
+  - name: n8n-db
+    plan: free
