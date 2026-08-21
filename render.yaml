@@ -18,15 +18,21 @@
 #     `fromService` so a fresh fork needs zero manual env var edits.
 #
 # Persistent disks require a paid instance type (see
-# https://render.com/docs/disks#disk-pricing), hence `plan: starter` below
-# instead of `free`.
+# https://render.com/docs/disks#disk-pricing), which rules out `free`.
+# `standard`, not `starter`, is the actual floor here -- confirmed by a real
+# deploy: on `starter` (512MB), the n8n process reliably hits `FATAL ERROR:
+# Ineffective mark-compacts near heap limit -- JavaScript heap out of
+# memory` and crash-loops a few seconds after reaching "ready", during
+# Postgres migration lock acquisition + its default resource footprint.
+# `standard` boots clean with room to spare. See README > Verification for
+# the full crash log this was diagnosed from.
 services:
   - type: web
     name: n8n
     runtime: docker
     dockerfilePath: ./Dockerfile
     dockerContext: .
-    plan: starter
+    plan: standard
     healthCheckPath: /healthz
     disk:
       name: n8n-data

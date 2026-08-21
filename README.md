@@ -201,6 +201,11 @@ next to the process.
 5. Open `imagekit-library-chat` and click **Open Chat** to try it. Grab the
    `imagekit-batch-transform` workflow's webhook URL from its Webhook node
    and try the `curl` example above.
+6. **Activate `imagekit-batch-transform`** (the toggle in the editor's
+   top-right) before calling its *production* webhook URL (the one without
+   `/webhook-test/`) -- an inactive workflow's production webhook 404s with
+   `"is not registered"`. `imagekit-library-chat` doesn't need this: its chat
+   trigger is called through n8n's own chat UI/API, not a standalone webhook.
 
 ## Local development
 
@@ -237,12 +242,90 @@ scripts, `render.yaml`, and workflow JSON) is MIT-licensed -- see
 
 ## Verification
 
-No Docker daemon was available in the environment this repo was built in,
-so the Render Blueprint deploy itself (build the Dockerfile, boot the
-container, run the entrypoint end-to-end inside a real container) has
-**not** been exercised. Everything short of that was verified against a
-real, disposable local n8n instance (`npm install n8n@latest`, n8n
-`2.35.5`, Node 22.22, SQLite):
+**Deployed for real to Render (2026-08-21)** -- a real Docker build, a real
+Postgres database, a real running container, both real workflows executed
+against a real ImageKit account and a real Anthropic key. This section
+first covers that real deploy (including two real bugs it caught that no
+amount of local testing could have), then the local n8n verification this
+repo was originally built and unit-verified against.
+
+### The real Render deploy
+
+Provisioned via the Render API rather than the Dashboard's Blueprint UI
+(same reasoning as [`imagekit-render-creative-automation`](../imagekit-render-creative-automation/README.md#deploying-the-workflow-service):
+non-interactive provisioning needs a plain repo URL, not GitHub App OAuth) --
+functionally identical to what clicking **New > Blueprint** produces, since
+`render.yaml`'s services/database are recreated 1:1 by hand: a Render
+Postgres instance, then the `n8n` web service (Docker runtime, the same
+`dockerfilePath`/`dockerContext`, the same disk, the same `healthCheckPath`).
+
+- **Real Docker build.** Render pulled `n8nio/n8n:2.35.5` and layered this
+  repo's `workflows/` + entrypoint on top exactly as `Dockerfile` specifies --
+  confirming the pinned tag genuinely exists on Docker Hub, which the local-
+  only verification below could not (no Docker daemon was available in that
+  earlier pass).
+- **Real bug #1: `plan: starter` is not enough RAM.** The very first real
+  boot hit `FATAL ERROR: Ineffective mark-compacts near heap limit --
+  JavaScript heap out of memory` a few seconds after n8n logged "ready",
+  crash-looping repeatedly. n8n reached a genuinely working state (server
+  listening, migrations running) before running out of headroom under
+  `starter`'s 512MB. Confirmed the fix by re-deploying the identical image
+  on `standard` -- clean boot, no crash, stable since. `render.yaml` now
+  specifies `standard`.
+- **Real bug #2: a persistent-disk + encryption-key race on this exact
+  provisioning path.** Render auto-triggers a first deploy the instant a
+  service is created via the API, *before* a follow-up call can set env
+  vars. That first (crashing, per bug #1) boot still got far enough to
+  auto-generate its own `N8N_ENCRYPTION_KEY` and persist n8n's settings file
+  to the mounted disk. Setting a *different*, intentional
+  `N8N_ENCRYPTION_KEY` afterward then permanently conflicted with what was
+  already on disk: `Error: Mismatching encryption keys. The encryption key
+  in the settings file /home/node/.n8n/config does not match the
+  N8N_ENCRYPTION_KEY env var.` The disk survives redeploys by design (see
+  [Why a persistent disk](#why-a-persistent-disk-when-renders-own-template-skips-it)),
+  so this doesn't self-heal -- the fix was deleting the service (which drops
+  its disk) and recreating it with every env var, including
+  `N8N_ENCRYPTION_KEY`, supplied in the *same* creation call so nothing ever
+  touches the disk with an unintended key. If you provision through the
+  Dashboard's Blueprint flow instead (the documented path in
+  [Deploying to Render](#deploying-to-render)), `render.yaml`'s
+  `generateValue: true` is set once as part of that same flow and this race
+  doesn't apply -- this is specific to non-interactive, API-driven
+  provisioning of an already-created service.
+- **`imagekit-library-chat`, executed for real** against the live deployed
+  instance (`/rest/workflows/:id/run` with a real chat-trigger payload, the
+  same mechanism as the local verification below): asking "What files do
+  you have in the media library? List up to 5 with their file names and
+  URLs" returned the account's actual 5 files with real names and real
+  `ik.imagekit.io` delivery URLs -- the `AI Agent` node genuinely called the
+  live `List/Search Media Library` tool rather than hallucinating.
+  - **Caught a real, unrelated bug along the way**: the Anthropic key
+    supplied for this deploy had been invalidated since it was first shared
+    earlier in this project (`401 {"type":"authentication_error","message":
+    "API key is invalid."}`, confirmed directly against
+    `api.anthropic.com`, not an n8n misconfiguration). A fresh key resolved
+    it immediately -- worth knowing that Anthropic keys can be silently
+    revoked/rotated out from under a long-running project.
+- **`imagekit-batch-transform`, activated and hit through its real
+  *production* webhook URL** (not the manual-run path) -- the actual way an
+  external caller would use it per the `curl` example earlier in this
+  README. This required discovering n8n `2.35.5`'s newer, versioned
+  activation flow: a plain `PATCH /rest/workflows/:id { "active": true }`
+  (the documented method in older n8n versions, and what the local
+  verification below relied on) returns `200` but silently does **not**
+  activate the workflow in this version -- `activeVersionId` stays `null`.
+  The real endpoint is `POST /rest/workflows/:id/activate` with the
+  workflow's current `versionId` in the body; that's what
+  [step 6 above](#deploying-to-render) documents. Once actually activated,
+  a real webhook POST (`searchQuery: type="file"`, 2 real assets, 1 variant)
+  returned a real `200` with a real CSV manifest, and fetching both
+  transformed URLs (`?tr=w-200,h-200`) directly returned real `200`s.
+
+### Local verification (original, pre-deploy)
+
+Everything in this subsection was verified against a real, disposable local
+n8n instance (`npm install n8n@latest`, n8n `2.35.5`, Node 22.22, SQLite),
+before a real Render deploy was available to test against directly:
 
 - **Both workflow JSON files import cleanly** via the exact command the
   Dockerfile's entrypoint runs: `n8n import:workflow --separate
@@ -304,11 +387,14 @@ real, disposable local n8n instance (`npm install n8n@latest`, n8n
   confirming a redeploy won't clobber UI edits.
 - **The Postgres-wait helper inside the same script was written but not
   exercised** against a real Postgres instance failing to come up in time --
-  logic only, not proven under a real race.
-- The exact Docker base image tag (`n8nio/n8n:2.35.5`) matches the npm
-  package version tested above; Docker Hub availability of that specific
-  tag was **not** separately confirmed (no Docker daemon in this
-  environment -- see above).
+  logic only, not proven under a real race. (The real deploy above did
+  exercise it against a real, freshly-created Postgres instance on every
+  boot, including the crash-loop restarts from bug #1 -- it never had to
+  actually wait since the real database was ready quickly each time, so
+  the *slow-database* branch specifically is still unexercised.)
+- The exact Docker base image tag (`n8nio/n8n:2.35.5`) matching the npm
+  package version tested above, and that tag's actual availability on
+  Docker Hub, are both now confirmed by the real deploy above.
 
 If you deploy this and hit an import or graph error the local verification
 above didn't catch, please open an issue with the exact n8n version from
