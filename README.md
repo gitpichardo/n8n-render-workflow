@@ -12,6 +12,14 @@ Render" isn't the contribution here. The contribution is what ships inside
 it: working agentic media automation that runs the moment the deploy
 finishes.
 
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/gitpichardo/n8n-render-workflow)
+
+> The button provisions `n8n` + Postgres from [`render.yaml`](render.yaml).
+> You will need an [ImageKit account](#imagekit-setup) (and an LLM key for
+> the chat agent) after first login — see [First login setup](#first-login-setup).
+> `autoDeployTrigger` is `off` so forks created from this button do not
+> redeploy on every push to this template repo.
+
 > **Status:** built against n8n's `execute`-free surfaces on purpose. See
 > [docs/v2-migration.md](docs/v2-migration.md) for exactly what changes once
 > ImageKit's hosted MCP ships named tools instead of `execute`.
@@ -144,6 +152,23 @@ the placeholder HTTP Request (Tool) nodes for named MCP tools with a
 [docs/v2-migration.md](docs/v2-migration.md) so the swap is mechanical
 rather than archaeological.
 
+## ImageKit setup
+
+Yes — you need ImageKit credentials to use the media-library REST nodes
+(list/search, custom metadata, batch transform search). The DevTools MCP
+nodes (`search_docs`, `transformation_builder`) are public and need no key.
+
+1. Create an account at [imagekit.io/registration](https://imagekit.io/registration/).
+2. Open the [API keys dashboard](https://imagekit.io/dashboard/developer/api-keys)
+   and copy your **Private key** (starts with `private_`).
+3. After n8n is up, attach that key as an HTTP Basic Auth credential in the
+   editor — see [First login setup](#first-login-setup). ImageKit keys are
+   **not** set as container env vars in this Blueprint; they live in n8n's
+   encrypted credential store.
+
+You will also need an Anthropic or OpenAI API key for the chat agent
+workflow (same first-login steps).
+
 ## First login setup
 
 Two credentials can't be baked into the exported workflow JSON (n8n never
@@ -189,19 +214,18 @@ next to the process.
 
 ## Deploying to Render
 
-1. Fork this repo.
-2. In the Render dashboard, **New > Blueprint**, point it at your fork.
+1. Click the [Deploy to Render](https://render.com/deploy?repo=https://github.com/gitpichardo/n8n-render-workflow) button above, **or** fork this repo and in the Render dashboard use **New > Blueprint** pointed at your fork.
    Render provisions the `n8n` web service and `n8n-db` Postgres database
    from `render.yaml`.
-3. Wait for the first deploy to finish building the Docker image and
+2. Wait for the first deploy to finish building the Docker image and
    importing both workflows (check the service logs for `imagekit-n8n-render:
    marked workflows as imported`).
-4. Open the service's URL, complete n8n's owner account setup, then follow
-   [First login setup](#first-login-setup) above.
-5. Open `imagekit-library-chat` and click **Open Chat** to try it. Grab the
+3. Open the service's URL, complete n8n's owner account setup, then follow
+   [ImageKit setup](#imagekit-setup) and [First login setup](#first-login-setup).
+4. Open `imagekit-library-chat` and click **Open Chat** to try it. Grab the
    `imagekit-batch-transform` workflow's webhook URL from its Webhook node
    and try the `curl` example above.
-6. **Activate `imagekit-batch-transform`** (the toggle in the editor's
+5. **Activate `imagekit-batch-transform`** (the toggle in the editor's
    top-right) before calling its *production* webhook URL (the one without
    `/webhook-test/`) -- an inactive workflow's production webhook 404s with
    `"is not registered"`. `imagekit-library-chat` doesn't need this: its chat
@@ -344,7 +368,11 @@ Postgres instance, then the `n8n` web service (Docker runtime, the same
   activate the workflow in this version -- `activeVersionId` stays `null`.
   The real endpoint is `POST /rest/workflows/:id/activate` with the
   workflow's current `versionId` in the body; that's what
-  [step 6 above](#deploying-to-render) documents. Once actually activated,
+  [step 6 above](#deploying-to-render) documents. A ready-to-file upstream
+  issue for this is drafted at
+  `docs/upstream-issues/workflow-activation-versioned-endpoint.md` (not yet
+  opened -- checked against n8n's tracker first, see the file for related-
+  but-distinct issues found there). Once actually activated,
   a real webhook POST (`searchQuery: type="file"`, 2 real assets, 1 variant)
   returned a real `200` with a real CSV manifest, and fetching both
   transformed URLs (`?tr=w-200,h-200`) directly returned real `200`s.
@@ -408,7 +436,10 @@ before a real Render deploy was available to test against directly:
     `genericAuthType: "httpBasicAuth"`, which is the mode the HTTP Request
     node's own code actually branches on to read the credential and set
     `user`/`pass` on the request. Both workflow JSON files here now use the
-    corrected mode.
+    corrected mode. A ready-to-file upstream issue for this is drafted at
+    `docs/upstream-issues/httpBasicAuth-predefinedCredentialType.md` (not
+    yet opened -- checked against n8n's tracker first, see the file for
+    related-but-distinct issues found there).
 - **The marker-file guard in `scripts/import-workflows.sh` was tested
   directly** (not just read): running it twice in a row imports on the
   first run and skips (`workflows already imported`) on the second,

@@ -33,6 +33,9 @@ services:
     dockerfilePath: ./Dockerfile
     dockerContext: .
     plan: standard
+    # Off so Deploy-to-Render forks don't redeploy every time this template
+    # repo gets a push (https://render.com/docs/deploy-to-render).
+    autoDeployTrigger: off
     healthCheckPath: /healthz
     disk:
       name: n8n-data
