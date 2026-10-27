@@ -26,71 +26,75 @@
 # Postgres migration lock acquisition + its default resource footprint.
 # `standard` boots clean with room to spare. See README > Verification for
 # the full crash log this was diagnosed from.
-services:
-  - type: web
-    name: n8n
-    runtime: docker
-    dockerfilePath: ./Dockerfile
-    dockerContext: .
-    plan: standard
-    # Off so Deploy-to-Render forks don't redeploy every time this template
-    # repo gets a push (https://render.com/docs/deploy-to-render).
-    autoDeployTrigger: off
-    healthCheckPath: /healthz
-    disk:
-      name: n8n-data
-      mountPath: /home/node/.n8n
-      sizeGB: 1
-    envVars:
-      # Do not modify after first deploy -- doing so makes every credential
-      # already encrypted in the database unreadable. Same warning as
-      # Render's own n8n Blueprint.
-      - key: N8N_ENCRYPTION_KEY
-        generateValue: true
-      - key: DB_TYPE
-        value: postgresdb
-      - key: DB_POSTGRESDB_DATABASE
-        fromDatabase:
-          name: n8n-db
-          property: database
-      - key: DB_POSTGRESDB_HOST
-        fromDatabase:
-          name: n8n-db
-          property: host
-      - key: DB_POSTGRESDB_PORT
-        fromDatabase:
-          name: n8n-db
-          property: port
-      - key: DB_POSTGRESDB_USER
-        fromDatabase:
-          name: n8n-db
-          property: user
-      - key: DB_POSTGRESDB_PASSWORD
-        fromDatabase:
-          name: n8n-db
-          property: password
-      - key: N8N_PROTOCOL
-        value: https
-      - key: N8N_HOST
-        fromService:
-          type: web
-          name: n8n
-          envVarKey: RENDER_EXTERNAL_HOSTNAME
-      - key: WEBHOOK_URL
-        fromService:
-          type: web
-          name: n8n
-          envVarKey: RENDER_EXTERNAL_URL
-      # Public, unauthenticated ImageKit DevTools MCP -- see README > MCP
-      # configuration. Not a secret; safe to set as a plain value.
-      - key: IMAGEKIT_MCP_URL
-        value: https://devtools-mcp.imagekit.io/mcp
-      # ImageKit credentials are NOT set here. They're attached as an n8n
-      # credential in the editor UI on first login (see README > First
-      # login setup), not as container env vars, so they're encrypted at
-      # rest by n8n's own credential store rather than living in plaintext
-      # next to the process.
+projects:
+  - name: n8n-imagekit
+    environments:
+      - name: production
+        services:
+          - type: web
+            name: n8n
+            runtime: docker
+            dockerfilePath: ./Dockerfile
+            dockerContext: .
+            plan: standard
+            # Off so Deploy-to-Render forks don't redeploy every time this template
+            # repo gets a push (https://render.com/docs/deploy-to-render).
+            autoDeployTrigger: off
+            healthCheckPath: /healthz
+            disk:
+              name: n8n-data
+              mountPath: /home/node/.n8n
+              sizeGB: 1
+            envVars:
+              # Do not modify after first deploy -- doing so makes every credential
+              # already encrypted in the database unreadable. Same warning as
+              # Render's own n8n Blueprint.
+              - key: N8N_ENCRYPTION_KEY
+                generateValue: true
+              - key: DB_TYPE
+                value: postgresdb
+              - key: DB_POSTGRESDB_DATABASE
+                fromDatabase:
+                  name: n8n-db
+                  property: database
+              - key: DB_POSTGRESDB_HOST
+                fromDatabase:
+                  name: n8n-db
+                  property: host
+              - key: DB_POSTGRESDB_PORT
+                fromDatabase:
+                  name: n8n-db
+                  property: port
+              - key: DB_POSTGRESDB_USER
+                fromDatabase:
+                  name: n8n-db
+                  property: user
+              - key: DB_POSTGRESDB_PASSWORD
+                fromDatabase:
+                  name: n8n-db
+                  property: password
+              - key: N8N_PROTOCOL
+                value: https
+              - key: N8N_HOST
+                fromService:
+                  type: web
+                  name: n8n
+                  envVarKey: RENDER_EXTERNAL_HOSTNAME
+              - key: WEBHOOK_URL
+                fromService:
+                  type: web
+                  name: n8n
+                  envVarKey: RENDER_EXTERNAL_URL
+              # Public, unauthenticated ImageKit DevTools MCP -- see README > MCP
+              # configuration. Not a secret; safe to set as a plain value.
+              - key: IMAGEKIT_MCP_URL
+                value: https://devtools-mcp.imagekit.io/mcp
+              # ImageKit credentials are NOT set here. They're attached as an n8n
+              # credential in the editor UI on first login (see README > First
+              # login setup), not as container env vars, so they're encrypted at
+              # rest by n8n's own credential store rather than living in plaintext
+              # next to the process.
 
-databases:
-  - name: n8n-db
-    plan: free
+        databases:
+          - name: n8n-db
+            plan: free
